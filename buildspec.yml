@@ -15,6 +15,8 @@ phases:
       - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" plugins/redmine_team_capacity/test/weekly_hours_test.rb
 post_build:
   commands:
+    - docker push "$IMAGE_URI"
+    - printf 'IMAGE_URI=%s\n' "$IMAGE_URI" > image.env
     - |
       echo "=== ECR Debug Information ==="
 
@@ -55,4 +57,6 @@ post_build:
 artifacts:
   files:
     - appspec.yml
+    - image.env
+    - compose.prod.yaml
     - deploy/**/*
