@@ -1,0 +1,47 @@
+<h2>課の工数（週次・管理者限定）</h2>
+<p>週次の予定工数は本プラグインに保存します。実績はRedmineの「作業時間」から自動集計します。</p>
+<p>対象週: <strong><%= h @week_start.iso8601 %> ～ <%= h (@week_start + 6).iso8601 %></strong></p>
+<%= form_tag team_capacity_path, method: :get do %>
+  <%= label_tag :week, '週の開始日（月曜日に補正）' %>
+  <%= date_field_tag :week, @week_start.iso8601 %>
+  <%= submit_tag '表示' %>
+<% end %>
+<hr>
+<h3>予定工数を登録・更新</h3>
+<%= form_tag team_capacity_plans_path, method: :post do %>
+  <%= hidden_field_tag :week_start, @week_start.iso8601 %>
+  <%= label_tag :user_id, '担当者' %>
+  <%= select_tag :user_id, options_from_collection_for_select(@users, :id, :name), required: true %>
+  <%= label_tag :project_id, '案件' %>
+  <%= select_tag :project_id, options_from_collection_for_select(@projects, :id, :name), required: true %>
+  <%= label_tag :planned_hours, '予定工数(h)' %>
+  <%= number_field_tag :planned_hours, nil, min: 0, max: 168, step: 0.25, required: true %>
+  <%= submit_tag '保存' %>
+<% end %>
+<p>※同じ担当者・案件・週を保存すると上書き。0時間で登録すると予定工数を0にできます。</p>
+<hr>
+<h3>担当者×案件別</h3>
+<table class="list">
+  <thead><tr><th>担当者</th><th>案件</th><th>予定(h)</th><th>実績(h)</th><th>差分(h)</th></tr></thead>
+  <tbody>
+  <% @rows.each do |r| %>
+    <tr>
+      <td><%= h r[:user].name %></td><td><%= h r[:project].name %></td>
+      <td><%= format('%.2f', r[:planned]) %></td><td><%= format('%.2f', r[:actual]) %></td>
+      <td><%= format('%.2f', r[:difference]) %></td>
+    </tr>
+  <% end %>
+  </tbody>
+</table>
+<h3>担当者別の週合計（基準37.5h）</h3>
+<table class="list">
+  <thead><tr><th>担当者</th><th>予定(h)</th><th>実績(h)</th><th>予定配賦率(%)</th></tr></thead>
+  <tbody>
+  <% @users.each do |u| %>
+    <% t = @weekly_total[u.id] || TeamCapacity::WeeklyHours.aggregate(0, 0) %>
+    <tr><td><%= h u.name %></td><td><%= format('%.2f', t[:planned]) %></td>
+      <td><%= format('%.2f', t[:actual]) %></td><td><%= format('%.1f', t[:allocation_pct]) %>%</td></tr>
+  <% end %>
+  </tbody>
+</table>
+<p>差分 = 実績 - 予定。配賦率 = 週の予定 / 37.5h。休暇・祝日・個人別契約時間は未反映です。</p>

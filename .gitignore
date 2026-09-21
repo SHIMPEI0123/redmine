@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+!.env.prod.example
+**/image.env
+*.pem
+*credentials*.csv
+.DS_Store
+*.log
+coverage/
+tmp/

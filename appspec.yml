@@ -1,0 +1,16 @@
+version: 0.0
+os: linux
+files:
+  - source: /deploy
+    destination: /opt/redmine-team
+file_exists_behavior: OVERWRITE
+hooks:
+  BeforeInstall:
+    - location: deploy/scripts/check_host.sh
+      timeout: 120
+  AfterInstall:
+    - location: deploy/scripts/start.sh
+      timeout: 1800
+  ValidateService:
+    - location: deploy/scripts/validate.sh
+      timeout: 300

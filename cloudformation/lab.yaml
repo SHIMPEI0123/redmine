@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Redmine team capacity GitHub-CodePipeline-CodeBuild-ECR-CodeDeploy EC2 lab
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet with route to Internet Gateway (NAT not required)
+  GitHubRepo:
+    Type: String
+    Description: GitHub owner/repository (e.g. username/redmine-team-cicd)
+  ConnectionArn:
+    Type: String
+    Description: An AVAILABLE GitHub CodeConnections connection ARN
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.medium, t3.large]
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+Resources:
+  RedmineSg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: No ingress; use SSM port forwarding for web UI
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: 0.0.0.0/0
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration: {Status: Enabled}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+  ImageRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: redmine-team
+      ImageScanningConfiguration: {ScanOnPush: true}
+      ImageTagMutability: IMMUTABLE
+  CodeCommitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: redmine-team-lab
+      RepositoryDescription: Alternative Git remote for manual CodeCommit comparison
+  Ec2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: PullImageAndArtifact
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
+                Resource: !GetAtt ImageRepo.Arn
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion]
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+  Ec2Profile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref Ec2Role]
+  RedmineEc2:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !Ref AmiId
+      IamInstanceProfile: !Ref Ec2Profile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: '0'
+          GroupSet: [!Ref RedmineSg]
+          SubnetId: !Ref PublicSubnetId
+      Tags:
+        - {Key: Name, Value: redmine-team-lab}
+        - {Key: App, Value: redmine-team}
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf update -y
+          dnf install -y docker ruby wget curl awscli
+          systemctl enable --now docker
+          mkdir -p /usr/local/lib/docker/cli-plugins /etc/redmine-team /var/lib/redmine-team
+          curl -fsSL https://github.com/docker/compose/releases/download/v2.39.4/docker-compose-linux-x86_64 \
+            -o /usr/local/lib/docker/cli-plugins/docker-compose
+          chmod 755 /usr/local/lib/docker/cli-plugins/docker-compose
+          cd /tmp
+          curl -fsSL https://aws-codedeploy-${AWS::Region}.s3.${AWS::Region}.${AWS::URLSuffix}/latest/install -o codedeploy-install
+          chmod +x codedeploy-install
+          ./codedeploy-install auto
+          systemctl enable --now codedeploy-agent
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codedeploy.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns: [arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole]
+  DeployApp:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: redmine-team
+      ComputePlatform: Server
+  DeployGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref DeployApp
+      DeploymentGroupName: redmine-team-ec2
+      ServiceRoleArn: !GetAtt DeployRole.Arn
+      DeploymentConfigName: CodeDeployDefault.OneAtATime
+      Ec2TagFilters:
+        - Key: App
+          Value: redmine-team
+          Type: KEY_AND_VALUE
+  BuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codebuild.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: BuildImage
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: '*'
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject]
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: '*'
+              - Effect: Allow
+                Action: [ecr:BatchCheckLayerAvailability, ecr:CompleteLayerUpload, ecr:InitiateLayerUpload, ecr:PutImage, ecr:UploadLayerPart, ecr:BatchGetImage, ecr:GetDownloadUrlForLayer]
+                Resource: !GetAtt ImageRepo.Arn
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: redmine-team-build
+      ServiceRole: !GetAtt BuildRole.Arn
+      TimeoutInMinutes: 60
+      Artifacts: {Type: CODEPIPELINE}
+      Source: {Type: CODEPIPELINE, BuildSpec: buildspec.yml}
+      Environment:
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        Type: LINUX_CONTAINER
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - {Name: IMAGE_REPO_NAME, Value: redmine-team}
+          - {Name: AWS_ACCOUNT_ID, Value: !Ref 'AWS::AccountId'}
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: codepipeline.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PipelineActions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [s3:GetObject, s3:GetObjectVersion, s3:PutObject]
+                Resource: !Sub '${ArtifactBucket.Arn}/*'
+              - Effect: Allow
+                Action: codestar-connections:UseConnection
+                Resource: !Ref ConnectionArn
+              - Effect: Allow
+                Action: [codebuild:StartBuild, codebuild:BatchGetBuilds]
+                Resource: !GetAtt BuildProject.Arn
+              - Effect: Allow
+                Action: [codedeploy:CreateDeployment, codedeploy:GetApplication, codedeploy:GetApplicationRevision, codedeploy:GetDeployment, codedeploy:GetDeploymentConfig, codedeploy:RegisterApplicationRevision]
+                Resource: '*'
+              - Effect: Allow
+                Action: [codecommit:GetBranch, codecommit:GetCommit, codecommit:GetRepository, codecommit:UploadArchive, codecommit:GetUploadArchiveStatus, codecommit:CancelUploadArchive]
+                Resource: !GetAtt CodeCommitRepo.Arn
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: redmine-team-github
+      RoleArn: !GetAtt PipelineRole.Arn
+      ArtifactStore: {Type: S3, Location: !Ref ArtifactBucket}
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub
+              ActionTypeId: {Category: Source, Owner: AWS, Provider: CodeStarSourceConnection, Version: '1'}
+              Configuration:
+                ConnectionArn: !Ref ConnectionArn
+                FullRepositoryId: !Ref GitHubRepo
+                BranchName: main
+                OutputArtifactFormat: CODE_ZIP
+                DetectChanges: true
+              OutputArtifacts: [{Name: SourceOutput}]
+              RunOrder: 1
+        - Name: Build
+          Actions:
+            - Name: DockerAndTest
+              ActionTypeId: {Category: Build, Owner: AWS, Provider: CodeBuild, Version: '1'}
+              Configuration: {ProjectName: !Ref BuildProject}
+              InputArtifacts: [{Name: SourceOutput}]
+              OutputArtifacts: [{Name: BuildOutput}]
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: EC2
+              ActionTypeId: {Category: Deploy, Owner: AWS, Provider: CodeDeploy, Version: '1'}
+              Configuration: {ApplicationName: !Ref DeployApp, DeploymentGroupName: !Ref DeployGroup}
+              InputArtifacts: [{Name: BuildOutput}]
+              RunOrder: 1
+Outputs:
+  InstanceId: {Value: !Ref RedmineEc2}
+  PipelineName: {Value: !Ref Pipeline}
+  CodeCommitRepoName: {Value: !GetAtt CodeCommitRepo.Name}
+  CodeCommitCloneUrl: {Value: !GetAtt CodeCommitRepo.CloneUrlHttp}
+  EcrRepoUri: {Value: !GetAtt ImageRepo.RepositoryUri}
+  ArtifactBucketName: {Value: !Ref ArtifactBucket}

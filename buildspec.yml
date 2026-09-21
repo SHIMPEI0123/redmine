@@ -1,0 +1,28 @@
+version: 0.2
+phases:
+  pre_build:
+    commands:
+      - set -e
+      - test -n "$CODEBUILD_RESOLVED_SOURCE_VERSION"
+      - export IMAGE_TAG="$(printf '%s' "$CODEBUILD_RESOLVED_SOURCE_VERSION" | cut -c1-12)"
+      - export REPO_URI="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/${IMAGE_REPO_NAME}"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com"
+  build:
+    commands:
+      - docker build -t "$REPO_URI:$IMAGE_TAG" .
+      - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" -c plugins/redmine_team_capacity/init.rb
+      - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" -c plugins/redmine_team_capacity/app/controllers/team_capacity_controller.rb
+      - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" plugins/redmine_team_capacity/test/weekly_hours_test.rb
+  post_build:
+    commands:
+      - |
+        if aws ecr describe-images --repository-name "$IMAGE_REPO_NAME" --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+          echo "Image tag already exists; reusing immutable image $REPO_URI:$IMAGE_TAG"
+        else
+          docker push "$REPO_URI:$IMAGE_TAG"
+        fi
+      - printf 'IMAGE_URI=%s\n' "$REPO_URI:$IMAGE_TAG" > deploy/image.env
+artifacts:
+  files:
+    - appspec.yml
+    - deploy/**/*
