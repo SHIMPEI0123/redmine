@@ -1,16 +1,26 @@
 version: 0.0
 os: linux
+
 files:
-  - source: /deploy
+  - source: image.env
     destination: /opt/redmine-team
-file_exists_behavior: OVERWRITE
+
+  - source: compose.prod.yaml
+    destination: /opt/redmine-team
+
+  - source: deploy/scripts
+    destination: /opt/redmine-team/scripts
+
 hooks:
   BeforeInstall:
     - location: deploy/scripts/check_host.sh
-      timeout: 120
+      timeout: 300
+      runas: root
+
   AfterInstall:
     - location: deploy/scripts/start.sh
-      timeout: 1800
+      timeout: 600
+      runas: root
   ValidateService:
     - location: deploy/scripts/validate.sh
       timeout: 300
