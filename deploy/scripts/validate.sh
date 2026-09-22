@@ -5,7 +5,9 @@ set -a
 source /etc/redmine-team/runtime.env
 source ./image.env
 set +a
-if curl --fail --silent --show-error --retry 30 --retry-delay 5 --retry-connrefused \
+# The container can accept connections before Rails finishes starting.
+if curl --fail --silent --show-error --retry 30 --retry-delay 5 --retry-all-errors \
+      --retry-max-time 240 --connect-timeout 2 --max-time 5 \
       http://127.0.0.1:3000/login -o /dev/null; then
   cp image.env /var/lib/redmine-team/current-image.env
   echo 'Redmine smoke test OK'
