@@ -13,50 +13,25 @@ phases:
       - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" -c plugins/redmine_team_capacity/init.rb
       - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" -c plugins/redmine_team_capacity/app/controllers/team_capacity_controller.rb
       - docker run --rm --entrypoint ruby "$REPO_URI:$IMAGE_TAG" plugins/redmine_team_capacity/test/weekly_hours_test.rb
-post_build:
-  commands:
-    - docker push "$IMAGE_URI"
-    - printf 'IMAGE_URI=%s\n' "$IMAGE_URI" > image.env
-    - |
-      echo "=== ECR Debug Information ==="
-
-      aws sts get-caller-identity
-
-      echo "AWS Region: $AWS_DEFAULT_REGION"
-      echo "Repository: $IMAGE_REPO_NAME"
-      echo "Image Tag: $IMAGE_TAG"
-      echo "Repository URI: $REPO_URI"
-
-      echo "=== Checking existing ECR image ==="
-
-      if aws ecr describe-images \
-        --region "$AWS_DEFAULT_REGION" \
-        --registry-id "$AWS_ACCOUNT_ID" \
-        --repository-name "$IMAGE_REPO_NAME" \
-        --image-ids imageTag="$IMAGE_TAG" \
-        > /dev/null 2> /tmp/ecr-error.log; then
-
-        echo "SUCCESS: Image already exists."
-        echo "Reusing image: $REPO_URI:$IMAGE_TAG"
-
-      elif grep -q 'ImageNotFoundException' /tmp/ecr-error.log; then
-
-        echo "Image does not exist."
-        echo "Pushing Docker image..."
-
-        docker push "$REPO_URI:$IMAGE_TAG"
-
-      else
-
-        echo "ERROR: ECR image check failed."
-        cat /tmp/ecr-error.log >&2
-        exit 1
-
-      fi
+  post_build:
+    commands:
+      - test "$CODEBUILD_BUILD_SUCCEEDING" = "1"
+      - |
+        set -e
+        existing_digest=$(aws ecr batch-get-image \
+          --region "$AWS_DEFAULT_REGION" \
+          --registry-id "$AWS_ACCOUNT_ID" \
+          --repository-name "$IMAGE_REPO_NAME" \
+          --image-ids imageTag="$IMAGE_TAG" \
+          --query 'images[0].imageId.imageDigest' --output text)
+        if [ "$existing_digest" = "None" ]; then
+          docker push "$REPO_URI:$IMAGE_TAG"
+        else
+          echo "Reusing existing image: $REPO_URI:$IMAGE_TAG"
+        fi
       - printf 'IMAGE_URI=%s\n' "$REPO_URI:$IMAGE_TAG" > deploy/image.env
+      - test -s deploy/image.env && test -s deploy/compose.prod.yaml
 artifacts:
   files:
     - appspec.yml
-    - image.env
-    - compose.prod.yaml
     - deploy/**/*

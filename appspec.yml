@@ -2,14 +2,17 @@ version: 0.0
 os: linux
 
 files:
-  - source: image.env
+  - source: deploy/image.env
     destination: /opt/redmine-team
 
-  - source: compose.prod.yaml
+  - source: deploy/compose.prod.yaml
     destination: /opt/redmine-team
 
   - source: deploy/scripts
     destination: /opt/redmine-team/scripts
+
+# Replace deployment-managed configuration left by an initial/manual setup.
+file_exists_behavior: OVERWRITE
 
 hooks:
   BeforeInstall:
